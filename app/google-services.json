@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "442161051683",
+    "project_id": "bookshare-cd748",
+    "storage_bucket": "bookshare-cd748.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:442161051683:android:b6bf36460db09fa55a1996",
+        "android_client_info": {
+          "package_name": "com.example.bookshare"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "442161051683-ehrh9ff0vht7vocjoog89ap6le4502tp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.bookshare",
+            "certificate_hash": "6528826b3f021d1652d562d012bdade3620536f8"
+          }
+        },
+        {
+          "client_id": "442161051683-5km9ltnnbjurq125ip75273fuv0fkger.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiJ4s-r0mNt-JPVCx7CQZ-St-WVJGkZbw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "442161051683-5km9ltnnbjurq125ip75273fuv0fkger.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
