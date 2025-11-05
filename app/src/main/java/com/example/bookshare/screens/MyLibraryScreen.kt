@@ -340,13 +340,20 @@ fun BookCard(book: Book, viewModel: MyLibraryViewModel) {
             }
 
             // Option 3: Delete
-            DropdownMenuItem(
-                text = { Text("Delete Book", color = MaterialTheme.colorScheme.error) },
-                onClick = {
-                    viewModel.deleteBook(book.id)
-                    showMenu = false
-                }
-            )
+            if (book.status != "LENT") {
+                DropdownMenuItem(
+                    text = { Text("Delete Book", color = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        viewModel.deleteBook(book.id)
+                        showMenu = false
+                    }
+                )
+            } else {
+                DropdownMenuItem(
+                    text = { Text("Cannot delete while lent", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    onClick = { showMenu = false }
+                )
+            }
         }
     }
 }

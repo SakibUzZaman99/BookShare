@@ -14,15 +14,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.example.bookshare.R
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
 
 @Composable
 fun BookScreen(navController: NavController, bookId: String) {
     var book by remember { mutableStateOf<Book?>(null) }
+    var sending by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
     val db = FirebaseFirestore.getInstance()
+    val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
 
-    // 🔹 Load book details from Firestore
+    // Load book details
     LaunchedEffect(bookId) {
         val snapshot = db.collection("books").document(bookId).get().await()
         book = snapshot.toObject(Book::class.java)
@@ -31,9 +35,7 @@ fun BookScreen(navController: NavController, bookId: String) {
     Scaffold { padding ->
         if (book == null) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                modifier = Modifier.fillMaxSize().padding(padding),
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
@@ -47,15 +49,9 @@ fun BookScreen(navController: NavController, bookId: String) {
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 🔹 Title
-                Text(
-                    "Book Details",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Text("Book Details", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
 
-                // 🔹 Book Image
                 Image(
                     painter = painterResource(id = R.drawable.booklogo_profile),
                     contentDescription = "Book Cover",
@@ -66,49 +62,62 @@ fun BookScreen(navController: NavController, bookId: String) {
                 )
 
                 Spacer(Modifier.height(20.dp))
-
-                // 🔹 Book Info Section
-                Text(
-                    text = book!!.title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "by ${book!!.author}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+                Text(book!!.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("by ${book!!.author}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary)
 
                 Spacer(Modifier.height(12.dp))
                 Divider()
                 Spacer(Modifier.height(12.dp))
 
                 book!!.genres.takeIf { it.isNotEmpty() }?.let {
-                    DetailItem(label = "Genres", value = it.joinToString(", "))
+                    DetailItem("Genres", it.joinToString(", "))
                 }
-                book!!.publisher?.let { DetailItem(label = "Publisher", value = it) }
-                book!!.year?.let { DetailItem(label = "Year", value = it) }
-                book!!.isbn?.let { DetailItem(label = "ISBN", value = it) }
-                book!!.city?.let { DetailItem(label = "City", value = it) }
-                book!!.area?.let { DetailItem(label = "Area", value = it) }
+                book!!.publisher?.let { DetailItem("Publisher", it) }
+                book!!.year?.let { DetailItem("Year", it) }
+                book!!.isbn?.let { DetailItem("ISBN", it) }
+                book!!.city?.let { DetailItem("City", it) }
+                book!!.area?.let { DetailItem("Area", it) }
 
                 Spacer(Modifier.height(32.dp))
 
-                // 🔹 Request Button
                 Button(
                     onClick = {
-                        // TODO: Add Firestore request logic
+                        if (currentUserId != null && book!!.ownerId != currentUserId) {
+                            sending = true
+                            val request = hashMapOf(
+                                "bookId" to bookId,
+                                "ownerId" to book!!.ownerId,
+                                "borrowerId" to currentUserId,
+                                "status" to "pending",
+                                "timestamp" to System.currentTimeMillis()
+                            )
+                            db.collection("requests").add(request)
+                                .addOnSuccessListener {
+                                    message = "Request sent successfully!"
+                                    sending = false
+                                }
+                                .addOnFailureListener {
+                                    message = "Failed to send request."
+                                    sending = false
+                                }
+                        } else {
+                            message = "You cannot request your own book."
+                        }
                     },
+                    enabled = !sending,
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
                     colors = ButtonDefaults.buttonColors(MaterialTheme.colorScheme.primary)
                 ) {
-                    Text("Request to Lend", style = MaterialTheme.typography.titleMedium)
+                    Text(if (sending) "Sending..." else "Request to Lend")
+                }
+
+                message?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(it, color = MaterialTheme.colorScheme.secondary)
                 }
 
                 Spacer(Modifier.height(32.dp))
-
-                // 🔹 Back button (like other screens navigation style)
                 TextButton(onClick = { navController.popBackStack() }) {
                     Text("Back", color = MaterialTheme.colorScheme.secondary)
                 }
@@ -119,20 +128,8 @@ fun BookScreen(navController: NavController, bookId: String) {
 
 @Composable
 fun DetailItem(label: String, value: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Text(
-            text = "$label:",
-            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium.copy(
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        )
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text("$label:", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+        Text(value, style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant))
     }
 }

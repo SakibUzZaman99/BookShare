@@ -29,27 +29,36 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.example.bookshare.R
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlin.math.min
 
 // ✅ Reuse Book and BookStatus from MyLibraryScreen
 import com.example.bookshare.screens.Book
 import com.example.bookshare.screens.BookStatus
 
-// 🔹 ViewModel for HomeScreen — now with live snapshot updates
+// 🔹 ViewModel for HomeScreen — now with real Borrowed and Lent lists
 class HomeViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
     private val booksCollection = db.collection("books")
+    private val requestsCollection = db.collection("requests")
+    private val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
 
     var lendingBooks by mutableStateOf<List<Book>>(emptyList())
+        private set
+    var borrowedBooks by mutableStateOf<List<Book>>(emptyList())
+        private set
+    var lentBooks by mutableStateOf<List<Book>>(emptyList())
         private set
 
     private var listener: ListenerRegistration? = null
 
     init {
         startListeningForBooks()
+        loadUserRelatedBooks()
     }
 
     private fun startListeningForBooks() {
@@ -63,16 +72,55 @@ class HomeViewModel : ViewModel() {
             }
     }
 
-    // 🔄 Manual refresh
-    fun refresh() {
-        db.collection("books")
-            .whereEqualTo("status", BookStatus.LENDING.name)
-            .get()
-            .addOnSuccessListener { snapshot ->
-                lendingBooks = snapshot.documents.mapNotNull { doc ->
-                    doc.toObject(Book::class.java)?.copy(id = doc.id)
+    // 🔹 Loads Borrowed and Lent book titles for current user
+    fun loadUserRelatedBooks() {
+        viewModelScope.launch {
+            if (currentUserId == null) return@launch
+
+            try {
+                // Borrowed
+                val borrowedRequests = requestsCollection
+                    .whereEqualTo("borrowerId", currentUserId)
+                    .whereEqualTo("status", "accepted")
+                    .get()
+                    .await()
+
+                borrowedBooks = borrowedRequests.documents.mapNotNull { doc ->
+                    val bookId = doc.getString("bookId") ?: return@mapNotNull null
+                    val bookSnap = booksCollection.document(bookId).get().await()
+                    bookSnap.toObject(Book::class.java)?.copy(id = bookId)
                 }
+
+                // Lent
+                val lentRequests = requestsCollection
+                    .whereEqualTo("ownerId", currentUserId)
+                    .whereEqualTo("status", "accepted")
+                    .get()
+                    .await()
+
+                lentBooks = lentRequests.documents.mapNotNull { doc ->
+                    val bookId = doc.getString("bookId") ?: return@mapNotNull null
+                    val bookSnap = booksCollection.document(bookId).get().await()
+                    bookSnap.toObject(Book::class.java)?.copy(id = bookId)
+                }
+            } catch (e: Exception) {
+                borrowedBooks = emptyList()
+                lentBooks = emptyList()
             }
+        }
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            loadUserRelatedBooks()
+            val snapshot = booksCollection
+                .whereEqualTo("status", BookStatus.LENDING.name)
+                .get()
+                .await()
+            lendingBooks = snapshot.documents.mapNotNull { doc ->
+                doc.toObject(Book::class.java)?.copy(id = doc.id)
+            }
+        }
     }
 
     override fun onCleared() {
@@ -87,6 +135,9 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
     var searchQuery by remember { mutableStateOf("") }
 
     val lendingBooks = viewModel.lendingBooks
+    val borrowedBooks = viewModel.borrowedBooks
+    val lentBooks = viewModel.lentBooks
+
     val filteredBooks = lendingBooks.filter {
         it.title.contains(searchQuery, ignoreCase = true) ||
                 it.author.contains(searchQuery, ignoreCase = true)
@@ -97,7 +148,7 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
     var lastVisibleItemIndex by remember { mutableStateOf(0) }
     var lastScrollOffset by remember { mutableStateOf(0) }
 
-    // 🔄 Pull-to-refresh state
+    // Pull-to-refresh
     var refreshing by remember { mutableStateOf(false) }
     val refreshState = rememberPullRefreshState(
         refreshing = refreshing,
@@ -144,7 +195,6 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                     .background(MaterialTheme.colorScheme.background)
             ) {
                 stickyHeader {
-                    // Collapsible Header
                     Surface(
                         tonalElevation = 3.dp,
                         shadowElevation = 4.dp,
@@ -163,7 +213,6 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                // Logo + Title
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Image(
                                         painter = painterResource(id = R.drawable.booksharelogo),
@@ -181,7 +230,6 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                                     )
                                 }
 
-                                // Profile dropdown
                                 var expanded by remember { mutableStateOf(false) }
                                 Box {
                                     Image(
@@ -222,7 +270,6 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                                 }
                             }
 
-                            // Borrowed + Lent + Search
                             AnimatedVisibility(
                                 visible = showExtras,
                                 enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
@@ -241,13 +288,13 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                                     ) {
                                         SectionCard(
                                             title = "Borrowed",
-                                            books = lendingBooks.take(3).map { it.title },
+                                            books = borrowedBooks.take(3).map { it.title },
                                             onClick = { navController.navigate("borrowed") },
                                             modifier = Modifier.weight(1f)
                                         )
                                         SectionCard(
                                             title = "Lent",
-                                            books = lendingBooks.takeLast(3).map { it.title },
+                                            books = lentBooks.take(3).map { it.title },
                                             onClick = { navController.navigate("lent") },
                                             modifier = Modifier.weight(1f)
                                         )
@@ -273,7 +320,7 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                     }
                 }
 
-                // 🔹 Book List with images & click navigation
+                // Book List (all lending books)
                 items(filteredBooks) { book ->
                     Card(
                         modifier = Modifier
@@ -305,9 +352,7 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     book.title,
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
                                     "Author: ${book.author}",
@@ -315,12 +360,6 @@ fun HomeScreen(navController: NavController, viewModel: HomeViewModel = viewMode
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 )
-                                book.genres.takeIf { it.isNotEmpty() }?.let {
-                                    Text(
-                                        "Genres: ${it.joinToString(", ")}",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
                             }
                         }
                     }
