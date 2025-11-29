@@ -18,6 +18,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        //API Keys
+        buildConfigField("String", "VISION_API_KEY", "\"AIzaSyCCY1EA04le1iBG5hKmw8W8J8Oj6j0N_Eo\"")
+        buildConfigField("String", "AZURE_ENDPOINT", "\"https://bookshare-ocr.cognitiveservices.azure.com\"")
+        buildConfigField("String", "AZURE_KEY", "\"1gTtKxv3yYwkT5EpB1SIkn5sODKMZ1cqAu8R67j341nNKtSMW2TvJQQJ99BKACqBBLyXJ3w3AAAFACOGqgie\"")
     }
 
     buildTypes {
@@ -38,6 +43,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -73,4 +79,21 @@ dependencies {
     implementation("com.google.firebase:firebase-storage")
     implementation("com.google.firebase:firebase-messaging")
 
+    // ML Kit – Text & Barcode
+    implementation ("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.0")
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    // Coroutines Tasks bridge
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+    // HTTP + JSON (for direct Vision/Azure calls)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.json:json:20240303")
+    // CameraX
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }

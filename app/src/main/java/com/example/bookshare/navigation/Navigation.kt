@@ -17,14 +17,21 @@ fun AppNavHost(navController: NavHostController) {
         // Main Screens
         composable("home") { HomeScreen(navController) }
         composable("library") { MyLibraryScreen(navController) }
-        composable("browse") { BrowseBooksScreen(navController) }
+        //composable("browse") { BrowseBooksScreen(navController) }
         composable("borrowed") { BorrowedScreen(navController) }
         composable("lent") { LentScreen(navController) }
         composable("profile") { ProfileScreen(navController) }
-        // 🔹 Book Details Screen (new)
+
+        // Book Details Screen
         composable("book/{bookId}") { backStackEntry ->
             val bookId = backStackEntry.arguments?.getString("bookId") ?: ""
             BookScreen(navController, bookId)
+        }
+
+        // Chat Screen
+        composable("chat/{requestId}") { backStackEntry ->
+            val requestId = backStackEntry.arguments?.getString("requestId") ?: ""
+            ChatScreen(navController, requestId)
         }
     }
 }

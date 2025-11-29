@@ -1,6 +1,9 @@
 package com.example.bookshare.screens
 
+import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.capitalize
 import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.unit.dp
@@ -21,32 +25,28 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.example.bookshare.ocr.BookParser
+import com.example.bookshare.ocr.CameraRoiOcrDialog
+import com.example.bookshare.ocr.OcrUtils
+import com.example.bookshare.ui.components.BookShareTopBar
+import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.firestore
-import com.google.firebase.firestore.toObjects
-import com.google.firebase.Firebase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
-/**
- * Defines the possible states for a book.
- */
-enum class BookStatus {
-    HIDDEN, // Default state, not visible to others
-    LENDING // Available for lending/sharing
-}
+// -------------------------------------------------------
+// Data + ViewModel
+// -------------------------------------------------------
 
-/**
- * Data class to represent a Book.
- * Added 'ownerId' to link the book to a user.
- * Added 'status' to track its sharing state.
- */
+enum class BookStatus { HIDDEN, LENDING }
+
 data class Book(
-    val id: String = "", // Document ID from Firestore
-    val ownerId: String = "", // Firebase Auth UID
+    val id: String = "",
+    val ownerId: String = "",
     val title: String = "",
     val author: String = "",
     val genres: List<String> = emptyList(),
@@ -55,83 +55,51 @@ data class Book(
     val isbn: String? = null,
     val city: String? = null,
     val area: String? = null,
-    val status: String = BookStatus.HIDDEN.name // Default status is HIDDEN
+    val status: String = BookStatus.HIDDEN.name
 )
 
-/**
- * ViewModel to manage the state and Firebase interactions for MyLibraryScreen.
- * It now filters books by the logged-in user's UID and manages status updates/deletions.
- */
 class MyLibraryViewModel : ViewModel() {
-
     private val db = Firebase.firestore
     private val booksCollection = db.collection("books")
-
-    // Get the current user's UID
     private val currentUserId: String? = FirebaseAuth.getInstance().currentUser?.uid
 
-    // Private MutableStateFlow to hold the list of books
     private val _books = MutableStateFlow<List<Book>>(emptyList())
-    // Public immutable StateFlow for the Composable to observe
     val books: StateFlow<List<Book>> = _books.asStateFlow()
 
     init {
-        // Load books when the ViewModel is created
         fetchBooks()
     }
 
-    /**
-     * Fetches books ONLY for the currently logged-in user.
-     */
     fun fetchBooks() {
-        // If no user is logged in, don't try to fetch.
         if (currentUserId == null) {
             Log.w("MyLibraryViewModel", "No user logged in, cannot fetch books.")
-            _books.value = emptyList() // Ensure list is empty
+            _books.value = emptyList()
             return
         }
-
         viewModelScope.launch {
             try {
-                // Add a query to filter by the owner's UID
                 val snapshot = booksCollection
-                    .whereEqualTo("ownerId", currentUserId) // <-- THE QUERY FILTER
+                    .whereEqualTo("ownerId", currentUserId)
                     .get()
                     .await()
-
-                // Map Firestore documents to Book objects, including the document ID
                 _books.value = snapshot.documents.mapNotNull { doc ->
                     doc.toObject(Book::class.java)?.copy(id = doc.id)
                 }
             } catch (e: Exception) {
-                // Handle errors (e.g., show a toast or log)
                 Log.e("MyLibraryViewModel", "Error fetching books", e)
-                _books.value = emptyList() // Clear list on error
+                _books.value = emptyList()
             }
         }
     }
 
-    /**
-     * Adds a new book document, stamping it with the current user's UID.
-     * The 'status' will default to HIDDEN as defined in the Book data class.
-     */
     fun addBook(book: Book) {
-        // Don't allow adding a book if user is not logged in
         if (currentUserId == null) {
             Log.e("MyLibraryViewModel", "Cannot add book, no user logged in.")
             return
         }
-
         viewModelScope.launch {
             try {
-                // Create a new book object from the UI one, adding the ownerId
-                // The 'status' field will use the default from the 'Book' data class
-                val bookWithOwner = book.copy(ownerId = currentUserId)
-
-                // Add the new book with the ownerId.
-                booksCollection.add(bookWithOwner).await()
-
-                // Refresh the list (fetchBooks() will automatically filter)
+                booksCollection.add(book.copy(ownerId = currentUserId)).await()
                 fetchBooks()
             } catch (e: Exception) {
                 Log.e("MyLibraryViewModel", "Error adding book", e)
@@ -139,17 +107,11 @@ class MyLibraryViewModel : ViewModel() {
         }
     }
 
-    /**
-     * Updates the 'status' field of a specific book document in Firestore.
-     */
     fun updateBookStatus(bookId: String, newStatus: BookStatus) {
         if (currentUserId == null) return
         viewModelScope.launch {
             try {
-                booksCollection.document(bookId)
-                    .update("status", newStatus.name)
-                    .await()
-                // Refresh the list to show the change
+                booksCollection.document(bookId).update("status", newStatus.name).await()
                 fetchBooks()
             } catch (e: Exception) {
                 Log.e("MyLibraryViewModel", "Error updating book status", e)
@@ -157,17 +119,11 @@ class MyLibraryViewModel : ViewModel() {
         }
     }
 
-    /**
-     * Deletes a specific book document from Firestore.
-     */
     fun deleteBook(bookId: String) {
         if (currentUserId == null) return
         viewModelScope.launch {
             try {
-                booksCollection.document(bookId)
-                    .delete()
-                    .await()
-                // Refresh the list
+                booksCollection.document(bookId).delete().await()
                 fetchBooks()
             } catch (e: Exception) {
                 Log.e("MyLibraryViewModel", "Error deleting book", e)
@@ -176,29 +132,26 @@ class MyLibraryViewModel : ViewModel() {
     }
 }
 
+// -------------------------------------------------------
+// Screen + Book cards
+// -------------------------------------------------------
 
-/**
- * The main screen for "My Library".
- * It observes the list of books from MyLibraryViewModel.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyLibraryScreen(
     navController: NavController,
-    viewModel: MyLibraryViewModel = viewModel() // Get the ViewModel instance
+    viewModel: MyLibraryViewModel = viewModel()
 ) {
-    // Collect the list of books as state
     val books by viewModel.books.collectAsState()
-
-    // State for managing the bottom sheet
     var showBottomSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
 
     Scaffold(
+        topBar = { BookShareTopBar(navController, title = "My Library") },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showBottomSheet = true }, // Show the sheet
+                onClick = { showBottomSheet = true },
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Add Book", tint = MaterialTheme.colorScheme.onPrimary)
@@ -211,13 +164,6 @@ fun MyLibraryScreen(
                 .padding(padding)
                 .padding(16.dp)
         ) {
-            Text("My Library", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(8.dp))
-            Text("Manage and view books you’ve added to share.", style = MaterialTheme.typography.bodyMedium)
-
-            Spacer(Modifier.height(16.dp))
-
-            // Show a message if the library is empty
             if (books.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -226,38 +172,34 @@ fun MyLibraryScreen(
                     Text("Your library is empty. Tap '+' to add a book.")
                 }
             } else {
-                // Display the list of books
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(books, key = { it.id }) { book ->
-                        BookCard(book = book, viewModel = viewModel)
+                        BookCard(
+                            book = book,
+                            viewModel = viewModel,
+                            navController = navController
+                        )
                     }
                 }
             }
         }
     }
 
-    // Modal Bottom Sheet for adding a new book
     if (showBottomSheet) {
         ModalBottomSheet(
             onDismissRequest = { showBottomSheet = false },
             sheetState = sheetState
         ) {
-            // Content of the bottom sheet
             AddBookSheet(
                 onAddBook = { newBook ->
                     viewModel.addBook(newBook)
-                    // Hide the sheet after adding
                     scope.launch { sheetState.hide() }.invokeOnCompletion {
-                        if (!sheetState.isVisible) {
-                            showBottomSheet = false
-                        }
+                        if (!sheetState.isVisible) showBottomSheet = false
                     }
                 },
                 onDismiss = {
                     scope.launch { sheetState.hide() }.invokeOnCompletion {
-                        if (!sheetState.isVisible) {
-                            showBottomSheet = false
-                        }
+                        if (!sheetState.isVisible) showBottomSheet = false
                     }
                 }
             )
@@ -265,113 +207,114 @@ fun MyLibraryScreen(
     }
 }
 
-/**
- * A simple card to display book information.
- * Now includes a dropdown menu to change status or delete the book.
- */
 @Composable
-fun BookCard(book: Book, viewModel: MyLibraryViewModel) {
+fun BookCard(
+    book: Book,
+    viewModel: MyLibraryViewModel,
+    navController: NavController
+) {
     var showMenu by remember { mutableStateOf(false) }
 
-    // Box is used to anchor the DropdownMenu to the Card
-    Box {
-        Card(
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                if (book.id.isNotBlank()) {
+                    navController.navigate("book/${book.id}")
+                }
+            },
+        colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { showMenu = true }, // Click to show menu
-            colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(book.title, style = MaterialTheme.typography.titleMedium)
-                    Text("by ${book.author}", style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.height(4.dp))
+            Column(Modifier.weight(1f)) {
+                Text(book.title, style = MaterialTheme.typography.titleMedium)
+                Text("by ${book.author}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Status: ${book.status.lowercase().capitalize(Locale.current)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (book.status == BookStatus.LENDING.name)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (book.genres.isNotEmpty()) {
                     Text(
-                        "Status: ${book.status.lowercase().capitalize(Locale.current)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (book.status == BookStatus.LENDING.name) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        "Genres: ${book.genres.joinToString(", ")}",
+                        style = MaterialTheme.typography.bodySmall
                     )
-                    book.genres.takeIf { it.isNotEmpty() }?.let {
-                        Text(
-                            "Genres: ${it.joinToString(", ")}",
-                            style = MaterialTheme.typography.bodySmall
+                }
+            }
+
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Options"
+                    )
+                }
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    if (book.status == BookStatus.HIDDEN.name) {
+                        DropdownMenuItem(
+                            text = { Text("Set to Lending") },
+                            onClick = {
+                                viewModel.updateBookStatus(book.id, BookStatus.LENDING)
+                                showMenu = false
+                            }
+                        )
+                    }
+                    if (book.status == BookStatus.LENDING.name) {
+                        DropdownMenuItem(
+                            text = { Text("Set to Hidden") },
+                            onClick = {
+                                viewModel.updateBookStatus(book.id, BookStatus.HIDDEN)
+                                showMenu = false
+                            }
+                        )
+                    }
+                    if (book.status != "LENT") {
+                        DropdownMenuItem(
+                            text = { Text("Delete Book", color = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                viewModel.deleteBook(book.id)
+                                showMenu = false
+                            }
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Cannot delete while lent", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            onClick = { showMenu = false }
                         )
                     }
                 }
-                // Icon to indicate the menu (optional, as the whole card is clickable)
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Options",
-                    modifier = Modifier.padding(start = 8.dp)
-                )
-            }
-        }
-
-        // Dropdown Menu for options
-        DropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false }
-        ) {
-            // Option 1: Set to LENDING
-            if (book.status == BookStatus.HIDDEN.name) {
-                DropdownMenuItem(
-                    text = { Text("Set to Lending") },
-                    onClick = {
-                        viewModel.updateBookStatus(book.id, BookStatus.LENDING)
-                        showMenu = false
-                    }
-                )
-            }
-
-            // Option 2: Set to HIDDEN
-            if (book.status == BookStatus.LENDING.name) {
-                DropdownMenuItem(
-                    text = { Text("Set to Hidden") },
-                    onClick = {
-                        viewModel.updateBookStatus(book.id, BookStatus.HIDDEN)
-                        showMenu = false
-                    }
-                )
-            }
-
-            // Option 3: Delete
-            if (book.status != "LENT") {
-                DropdownMenuItem(
-                    text = { Text("Delete Book", color = MaterialTheme.colorScheme.error) },
-                    onClick = {
-                        viewModel.deleteBook(book.id)
-                        showMenu = false
-                    }
-                )
-            } else {
-                DropdownMenuItem(
-                    text = { Text("Cannot delete while lent", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    onClick = { showMenu = false }
-                )
             }
         }
     }
 }
 
+// -------------------------------------------------------
+// Add Book sheet
+// -------------------------------------------------------
 
-/**
- * The content for the "Add Book" modal bottom sheet.
- * Contains a form for all the book fields.
- * No changes needed here, as the default 'status' is set in the data class.
- */
 @Composable
 fun AddBookSheet(
     onAddBook: (Book) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     var title by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("") }
-    var genres by remember { mutableStateOf("") } // Comma-separated string
+    var genres by remember { mutableStateOf("") }
     var publisher by remember { mutableStateOf("") }
     var year by remember { mutableStateOf("") }
     var isbn by remember { mutableStateOf("") }
@@ -382,7 +325,28 @@ fun AddBookSheet(
     var authorError by remember { mutableStateOf(false) }
     var genresError by remember { mutableStateOf(false) }
 
-    // Function to validate required fields
+    var pickedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var ocrText by remember { mutableStateOf("") }
+    var isBusy by remember { mutableStateOf(false) }
+    var info by remember { mutableStateOf<String?>(null) }
+
+    var showCamTitle by remember { mutableStateOf(false) }
+    var showCamAuthor by remember { mutableStateOf(false) }
+    var showCamPublisher by remember { mutableStateOf(false) }
+    var showCamYear by remember { mutableStateOf(false) }
+    var showCamIsbn by remember { mutableStateOf(false) }
+    var showCamGenres by remember { mutableStateOf(false) }
+    var showCamCity by remember { mutableStateOf(false) }
+    var showCamArea by remember { mutableStateOf(false) }
+
+    val pickImage = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        pickedImageUri = uri
+        ocrText = ""
+        info = null
+    }
+
     fun validate(): Boolean {
         titleError = title.isBlank()
         authorError = author.isBlank()
@@ -390,126 +354,352 @@ fun AddBookSheet(
         return !titleError && !authorError && !genresError
     }
 
-    Box(
+    fun genericSuggestions(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(20)
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                // Make the form scrollable
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Add a New Book", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
+        Text("Add a New Book", style = MaterialTheme.typography.titleLarge)
 
-            // --- Required Fields ---
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it; titleError = false },
-                label = { Text("Title*") },
-                isError = titleError,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = author,
-                onValueChange = { author = it; authorError = false },
-                label = { Text("Author*") },
-                isError = authorError,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = genres,
-                onValueChange = { genres = it; genresError = false },
-                label = { Text("Genre(s)*") },
-                placeholder = { Text("e.g. Sci-Fi, Fantasy, Mystery") },
-                isError = genresError,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-
-            // --- Optional Fields ---
-            OutlinedTextField(
-                value = publisher,
-                onValueChange = { publisher = it },
-                label = { Text("Publisher") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = year,
-                onValueChange = { year = it },
-                label = { Text("Year Published") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = isbn,
-                onValueChange = { isbn = it },
-                label = { Text("ISBN") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = city,
-                onValueChange = { city = it },
-                label = { Text("City") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedTextField(
-                value = area,
-                onValueChange = { area = it },
-                label = { Text("Area") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            // --- Action Buttons ---
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
-                }
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        if (validate()) {
-                            // Split genres string by comma and trim whitespace
-                            val genreList = genres.split(",")
-                                .map { it.trim() }
-                                .filter { it.isNotEmpty() }
-
-                            val newBook = Book(
-                                // 'id', 'ownerId', and 'status' are set
-                                // automatically or by default.
-                                title = title.trim(),
-                                author = author.trim(),
-                                genres = genreList,
-                                publisher = publisher.trim().takeIf { it.isNotEmpty() },
-                                year = year.trim().takeIf { it.isNotEmpty() },
-                                isbn = isbn.trim().takeIf { it.isNotEmpty() },
-                                city = city.trim().takeIf { it.isNotEmpty() },
-                                area = area.trim().takeIf { it.isNotEmpty() }
-                            )
-                            onAddBook(newBook)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { pickImage.launch("image/*") }) {
+                Text("Choose Image")
+            }
+            Button(
+                enabled = pickedImageUri != null && !isBusy,
+                onClick = {
+                    if (pickedImageUri == null) return@Button
+                    scope.launch {
+                        isBusy = true
+                        try {
+                            val txt = OcrUtils.mlkitText(context, pickedImageUri!!)
+                            ocrText = txt          // just store OCR
+                            info = "On-device OCR complete."
+                        } finally {
+                            isBusy = false
                         }
                     }
-                ) {
-                    Text("Add Book")
+                }
+            ) {
+                Text(if (isBusy) "Scanning..." else "Scan Text (ML Kit)")
+            }
+        }
+
+        if (ocrText.isNotBlank()) {
+            Text("Extracted text:", style = MaterialTheme.typography.labelLarge)
+            Text(
+                ocrText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        info?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.secondary,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        // fullOcrText passed to each field so menu can offer "Insert all extracted text"
+        val fullOcr = ocrText.takeIf { it.isNotBlank() }
+
+        FieldWithSuggestions(
+            label = "Title*",
+            value = title,
+            onChange = { title = it; titleError = false },
+            isError = titleError,
+            suggestions = if (ocrText.isBlank()) emptyList() else BookParser.suggestTitles(ocrText),
+            onCameraClick = { showCamTitle = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamTitle) {
+            CameraRoiOcrDialog(
+                title = "Capture Title",
+                onDismiss = { showCamTitle = false },
+                onTextExtracted = { text ->
+                    val first = text.lines().firstOrNull()?.trim().orEmpty()
+                    if (first.isNotEmpty()) title = first
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "Author*",
+            value = author,
+            onChange = { author = it; authorError = false },
+            isError = authorError,
+            suggestions = if (ocrText.isBlank()) emptyList() else BookParser.suggestAuthors(ocrText),
+            onCameraClick = { showCamAuthor = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamAuthor) {
+            CameraRoiOcrDialog(
+                title = "Capture Author",
+                onDismiss = { showCamAuthor = false },
+                onTextExtracted = { text ->
+                    val first = text.lines().firstOrNull()?.trim().orEmpty()
+                        .removePrefix("by ").removePrefix("By ").trim()
+                    if (first.isNotEmpty()) author = first
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "Genre(s)*",
+            value = genres,
+            onChange = { genres = it; genresError = false },
+            isError = genresError,
+            suggestions = genericSuggestions(ocrText),
+            onCameraClick = { showCamGenres = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamGenres) {
+            CameraRoiOcrDialog(
+                title = "Capture Genres",
+                onDismiss = { showCamGenres = false },
+                onTextExtracted = { text ->
+                    val line = text.lines().firstOrNull()?.trim().orEmpty()
+                    if (line.isNotEmpty()) {
+                        genres = if (genres.isBlank()) line else "$genres, $line"
+                    }
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "Publisher",
+            value = publisher,
+            onChange = { publisher = it },
+            isError = false,
+            suggestions = if (ocrText.isBlank()) emptyList() else BookParser.suggestPublishers(ocrText),
+            onCameraClick = { showCamPublisher = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamPublisher) {
+            CameraRoiOcrDialog(
+                title = "Capture Publisher",
+                onDismiss = { showCamPublisher = false },
+                onTextExtracted = { text ->
+                    val best = text.lines()
+                        .firstOrNull {
+                            it.contains("press", true) || it.contains("publish", true)
+                        }
+                        ?: text.lines().firstOrNull()
+                    best?.trim()?.let { if (it.isNotEmpty()) publisher = it }
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "Year Published",
+            value = year,
+            onChange = { year = it },
+            isError = false,
+            suggestions = if (ocrText.isBlank()) emptyList() else BookParser.suggestYears(ocrText),
+            onCameraClick = { showCamYear = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamYear) {
+            CameraRoiOcrDialog(
+                title = "Capture Year",
+                onDismiss = { showCamYear = false },
+                onTextExtracted = { text ->
+                    BookParser.suggestYears(text).firstOrNull()?.let { year = it }
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "ISBN",
+            value = isbn,
+            onChange = { isbn = it },
+            isError = false,
+            suggestions = if (ocrText.isBlank()) emptyList() else BookParser.suggestIsbns(ocrText),
+            onCameraClick = { showCamIsbn = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamIsbn) {
+            CameraRoiOcrDialog(
+                title = "Capture ISBN",
+                onDismiss = { showCamIsbn = false },
+                onTextExtracted = { text ->
+                    BookParser.suggestIsbns(text).firstOrNull()?.let { isbn = it }
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "City",
+            value = city,
+            onChange = { city = it },
+            isError = false,
+            suggestions = genericSuggestions(ocrText),
+            onCameraClick = { showCamCity = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamCity) {
+            CameraRoiOcrDialog(
+                title = "Capture City",
+                onDismiss = { showCamCity = false },
+                onTextExtracted = { text ->
+                    val first = text.lines().firstOrNull()?.trim().orEmpty()
+                    if (first.isNotEmpty()) city = first
+                }
+            )
+        }
+
+        FieldWithSuggestions(
+            label = "Area",
+            value = area,
+            onChange = { area = it },
+            isError = false,
+            suggestions = genericSuggestions(ocrText),
+            onCameraClick = { showCamArea = true },
+            fullOcrText = fullOcr
+        )
+        if (showCamArea) {
+            CameraRoiOcrDialog(
+                title = "Capture Area",
+                onDismiss = { showCamArea = false },
+                onTextExtracted = { text ->
+                    val first = text.lines().firstOrNull()?.trim().orEmpty()
+                    if (first.isNotEmpty()) area = first
+                }
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                if (validate()) {
+                    val genreList = genres.split(",")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                    onAddBook(
+                        Book(
+                            title = title.trim(),
+                            author = author.trim(),
+                            genres = genreList,
+                            publisher = publisher.trim().ifBlank { null },
+                            year = year.trim().ifBlank { null },
+                            isbn = isbn.trim().ifBlank { null },
+                            city = city.trim().ifBlank { null },
+                            area = area.trim().ifBlank { null }
+                        )
+                    )
+                }
+            }) {
+                Text("Add Book")
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+// -------------------------------------------------------
+// Shared field widgets
+// -------------------------------------------------------
+
+@Composable
+private fun CameraIcon(onClick: () -> Unit) {
+    TextButton(onClick = onClick) { Text("\uD83D\uDCF7") } // 📷
+}
+
+@Composable
+private fun FieldWithSuggestions(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    isError: Boolean,
+    suggestions: List<String>,
+    onCameraClick: (() -> Unit)? = null,
+    fullOcrText: String? = null
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Box {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            label = { Text(label) },
+            isError = isError,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            trailingIcon = {
+                Row {
+                    if (onCameraClick != null) {
+                        CameraIcon { onCameraClick() }
+                    }
+                    if (suggestions.isNotEmpty() || !fullOcrText.isNullOrBlank()) {
+                        TextButton(onClick = { menuOpen = !menuOpen }) {
+                            Text("⋯")
+                        }
+                    }
                 }
             }
-            // Add padding for the navigation bar
-            Spacer(Modifier.height(32.dp))
+        )
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false }
+        ) {
+            // First item: insert all extracted text (if available)
+            if (!fullOcrText.isNullOrBlank()) {
+                DropdownMenuItem(
+                    text = { Text("Insert all extracted text") },
+                    onClick = {
+                        val newVal = if (value.isBlank()) {
+                            fullOcrText
+                        } else {
+                            "$value $fullOcrText"
+                        }
+                        onChange(newVal)
+                        menuOpen = false   // usually you won't need multiple full-text inserts
+                    }
+                )
+                if (suggestions.isNotEmpty()) {
+                    Divider()
+                }
+            }
+
+            // Then individual suggestions (appendable, can pick multiple)
+            suggestions.forEach { s ->
+                DropdownMenuItem(
+                    text = { Text(s) },
+                    onClick = {
+                        val parts = value
+                            .split(" ", ",")
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                        val exists = parts.any { it.equals(s, ignoreCase = true) }
+
+                        val newVal = when {
+                            value.isBlank() -> s
+                            exists -> value
+                            else -> "$value $s"
+                        }
+                        onChange(newVal)
+                        // keep menu open so user can keep adding chunks
+                    }
+                )
+            }
         }
     }
 }

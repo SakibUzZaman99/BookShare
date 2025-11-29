@@ -9,6 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.example.bookshare.ui.components.BookShareTopBar
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
@@ -20,14 +21,13 @@ fun BorrowedScreen(navController: NavController) {
     val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
     var selectedTab by remember { mutableStateOf("Borrowed") }
 
-    // We keep requestId with the book so "Return" can update the exact request doc
     data class BorrowedEntry(val book: Book, val requestId: String)
 
     var borrowedEntries by remember { mutableStateOf<List<BorrowedEntry>>(emptyList()) }
-    var requests by remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    var borrowRequests by remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
     val scope = rememberCoroutineScope()
-    var isLoading by remember { mutableStateOf(false) }
     var snack by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
 
     suspend fun reloadBorrowed() {
         if (currentUserId == null) return
@@ -46,7 +46,6 @@ fun BorrowedScreen(navController: NavController) {
             }
             borrowedEntries = entries
         } catch (e: Exception) {
-            e.printStackTrace()
             borrowedEntries = emptyList()
             snack = "Failed to load borrowed books."
         } finally {
@@ -54,19 +53,22 @@ fun BorrowedScreen(navController: NavController) {
         }
     }
 
-    suspend fun reloadPendingRequests() {
+    suspend fun reloadBorrowRequests() {
         if (currentUserId == null) return
         isLoading = true
         try {
-            val snapshot = db.collection("requests")
+            val pendingReqs = db.collection("requests")
                 .whereEqualTo("borrowerId", currentUserId)
                 .whereEqualTo("status", "pending")
                 .get().await()
-            requests = snapshot.documents.map { it.data ?: emptyMap() }
+
+            borrowRequests = pendingReqs.documents.map { doc ->
+                val data = doc.data ?: emptyMap()
+                data + ("id" to doc.id)
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
-            requests = emptyList()
-            snack = "Failed to load pending requests."
+            borrowRequests = emptyList()
+            snack = "Failed to load borrow requests."
         } finally {
             isLoading = false
         }
@@ -75,20 +77,21 @@ fun BorrowedScreen(navController: NavController) {
     LaunchedEffect(selectedTab) {
         when (selectedTab) {
             "Borrowed" -> scope.launch { reloadBorrowed() }.join()
-            "Borrow Requests" -> scope.launch { reloadPendingRequests() }.join()
+            "Borrow Requests" -> scope.launch { reloadBorrowRequests() }.join()
         }
     }
 
-    Scaffold { padding ->
+    Scaffold(
+        topBar = { BookShareTopBar(navController, title = "Borrow Section") }
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp)
         ) {
-            Text("Borrow Section", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(16.dp))
 
+            // Tabs
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { selectedTab = "Borrowed" },
@@ -115,6 +118,7 @@ fun BorrowedScreen(navController: NavController) {
                 }
             } else {
                 when (selectedTab) {
+                    // Accepted Borrowed Books
                     "Borrowed" -> {
                         if (borrowedEntries.isEmpty()) {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -131,36 +135,110 @@ fun BorrowedScreen(navController: NavController) {
                                         Column(Modifier.padding(16.dp)) {
                                             Text(book.title, style = MaterialTheme.typography.titleMedium)
                                             Text("Owner: ${book.ownerId}", style = MaterialTheme.typography.bodySmall)
+
                                             Spacer(Modifier.height(8.dp))
 
-                                            Button(
-                                                onClick = {
-                                                    scope.launch {
-                                                        try {
-                                                            // 1) Set book back to LENDING
-                                                            db.collection("books")
-                                                                .document(book.id)
-                                                                .update("status", "LENDING")
-                                                                .await()
+                                            val requestRef = db.collection("requests").document(entry.requestId)
+                                            var exchangeStatus by remember { mutableStateOf("") }
+                                            var returnStatus by remember { mutableStateOf("") }
 
-                                                            // 2) Mark THIS request as returned
-                                                            db.collection("requests")
-                                                                .document(entry.requestId)
-                                                                .update("status", "returned")
-                                                                .await()
+                                            // Get both statuses
+                                            LaunchedEffect(entry.requestId) {
+                                                val snap = requestRef.get().await()
+                                                exchangeStatus = snap.getString("exchangeStatus") ?: ""
+                                                returnStatus = snap.getString("returnStatus") ?: ""
+                                            }
 
-                                                            // 3) Refresh list
-                                                            reloadBorrowed()
-                                                            snack = "Book returned."
-                                                        } catch (e: Exception) {
-                                                            e.printStackTrace()
-                                                            snack = "Return failed."
-                                                        }
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                if (exchangeStatus != "confirmed") {
+                                                    Button(
+                                                        onClick = {
+                                                            scope.launch {
+                                                                val now = System.currentTimeMillis()
+                                                                val snap = requestRef.get().await()
+                                                                val lastStatus = snap.getString("exchangeStatus") ?: ""
+                                                                val lastTime = snap.getLong("exchangeTimestamp") ?: 0L
+
+                                                                if (lastStatus.startsWith("initiated_") && now - lastTime <= 60000) {
+                                                                    requestRef.update(
+                                                                        mapOf(
+                                                                            "exchangeStatus" to "confirmed",
+                                                                            "exchangeTimestamp" to now
+                                                                        )
+                                                                    )
+                                                                    snack = "Exchange confirmed!"
+                                                                    exchangeStatus = "confirmed"
+                                                                } else {
+                                                                    requestRef.update(
+                                                                        mapOf(
+                                                                            "exchangeStatus" to "initiated_by_borrower",
+                                                                            "exchangeTimestamp" to now
+                                                                        )
+                                                                    )
+                                                                    snack = "Waiting for owner to confirm..."
+                                                                }
+                                                            }
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(MaterialTheme.colorScheme.primary)
+                                                    ) { Text("Initiate Exchange") }
+                                                } else if (returnStatus != "confirmed") {
+                                                    Button(
+                                                        onClick = {
+                                                            scope.launch {
+                                                                val now = System.currentTimeMillis()
+                                                                val snap = requestRef.get().await()
+                                                                val lastStatus = snap.getString("returnStatus") ?: ""
+                                                                val lastTime = snap.getLong("returnTimestamp") ?: 0L
+
+                                                                if (lastStatus.startsWith("initiated_") && now - lastTime <= 60000) {
+                                                                    requestRef.update(
+                                                                        mapOf(
+                                                                            "returnStatus" to "confirmed",
+                                                                            "returnTimestamp" to now,
+                                                                            "status" to "returned"
+                                                                        )
+                                                                    )
+                                                                    db.collection("books")
+                                                                        .document(book.id)
+                                                                        .update("status", "LENDING")
+                                                                    snack = "Return confirmed!"
+                                                                    returnStatus = "confirmed"
+                                                                } else {
+                                                                    requestRef.update(
+                                                                        mapOf(
+                                                                            "returnStatus" to "initiated_by_borrower",
+                                                                            "returnTimestamp" to now
+                                                                        )
+                                                                    )
+                                                                    snack = "Waiting for owner to confirm return..."
+                                                                }
+                                                            }
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(MaterialTheme.colorScheme.primary)
+                                                    ) { Text("Initiate Return") }
+                                                }
+
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        navController.navigate("chat/${entry.requestId}")
                                                     }
-                                                },
-                                                colors = ButtonDefaults.buttonColors(MaterialTheme.colorScheme.primary)
-                                            ) {
-                                                Text("Return Book")
+                                                ) { Text("Message") }
+                                            }
+
+                                            if (exchangeStatus == "confirmed" && returnStatus != "confirmed") {
+                                                Spacer(Modifier.height(8.dp))
+                                                Text(
+                                                    "Exchange Confirmed ✔",
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            } else if (returnStatus == "confirmed") {
+                                                Spacer(Modifier.height(8.dp))
+                                                Text(
+                                                    "Return Confirmed ✔ Book successfully returned.",
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
                                             }
                                         }
                                     }
@@ -169,21 +247,24 @@ fun BorrowedScreen(navController: NavController) {
                         }
                     }
 
+                    // Pending Borrow Requests
                     "Borrow Requests" -> {
-                        if (requests.isEmpty()) {
+                        if (borrowRequests.isEmpty()) {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text("No pending borrow requests.")
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(requests) { req ->
+                                items(borrowRequests) { req ->
                                     Card(
-                                        Modifier.fillMaxWidth(),
+                                        modifier = Modifier.fillMaxWidth(),
                                         colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceVariant)
                                     ) {
                                         Column(Modifier.padding(16.dp)) {
                                             Text("Book ID: ${req["bookId"]}")
                                             Text("Status: ${req["status"]}")
+                                            Spacer(Modifier.height(8.dp))
+                                            Text("Waiting for owner’s response...")
                                         }
                                     }
                                 }
@@ -196,11 +277,6 @@ fun BorrowedScreen(navController: NavController) {
             snack?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                LaunchedEffect(it) {
-                    // auto-clear message
-                    kotlinx.coroutines.delay(2000)
-                    snack = null
-                }
             }
         }
     }
